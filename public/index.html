@@ -1,0 +1,747 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ShibaCoin Block Visualizer</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#0a1628" />
+  <style>
+    /* Color scheme mirrors newsite.shibacoinshic.org (Tailwind config + globals.css) */
+    :root {
+      --primary:        #f39c12;
+      --primary-hover:  #e67e22;
+      --bg-base:        #0a1628;
+      --bg-card:        #0f2744;
+      --bg-card-hover:  #153458;
+      --bg-deeper:      #071520;
+      --text-primary:   #ffffff;
+      --text-secondary: #7eb8da;
+      --border:         #1e4a6d;
+      --success:        #2ecc71;
+      --warning:        #f1c40f;
+      --danger:         #e74c3c;
+    }
+    html, body {
+      margin: 0; padding: 0; height: 100%; overflow: hidden;
+      color: var(--text-primary);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: linear-gradient(135deg, #0a1628 0%, #0f2744 50%, #071520 100%);
+    }
+    canvas { display: block; }
+
+    /* HUD */
+    #hud {
+      position: fixed; top: 16px; left: 16px; z-index: 10;
+      background: linear-gradient(145deg, #0f2744 0%, rgba(15, 39, 68, 0.95) 100%);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 16px;
+      box-shadow: 0 8px 32px rgba(0, 20, 40, 0.5);
+      min-width: 240px;
+      backdrop-filter: blur(6px);
+    }
+    #hud h1 {
+      margin: 0 0 6px 0;
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--primary);
+      letter-spacing: 0.5px;
+    }
+    #hud h1 .shib { color: var(--text-primary); }
+    #hud .row {
+      display: flex; justify-content: space-between;
+      font-size: 12px; line-height: 1.7;
+      color: var(--text-secondary);
+    }
+    #hud .row b { color: var(--text-primary); font-weight: 600; }
+    #hud .stat { color: var(--primary); font-variant-numeric: tabular-nums; }
+
+    /* Controls */
+    #controls {
+      position: fixed; top: 16px; right: 16px; z-index: 10;
+      display: flex; gap: 8px;
+    }
+    .btn {
+      background: var(--bg-card);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 12px; font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+    .btn:hover { background: var(--bg-card-hover); border-color: var(--primary); color: var(--primary); }
+    .btn.primary { background: var(--primary); color: #0a1628; border-color: var(--primary); }
+    .btn.primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); color: #0a1628; }
+
+    /* Legend */
+    #legend {
+      position: fixed; bottom: 16px; left: 16px; z-index: 10;
+      background: linear-gradient(145deg, #0f2744 0%, rgba(15, 39, 68, 0.95) 100%);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 16px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      max-width: 320px;
+    }
+    #legend .row { display: flex; align-items: center; gap: 8px; line-height: 1.7; }
+    #legend .swatch {
+      display: inline-block; width: 14px; height: 14px;
+      border-radius: 3px; border: 1px solid var(--border);
+    }
+    #legend .cube { background: var(--primary); }
+    #legend .ball { background: radial-gradient(circle at 30% 30%, #f5b041, #e67e22); border-radius: 50%; }
+    #legend .plane { background: var(--bg-card); }
+
+    #err {
+      position: fixed; bottom: 16px; right: 16px; z-index: 10;
+      max-width: 360px; font-size: 12px;
+      color: var(--danger);
+      background: rgba(231, 76, 60, 0.1);
+      border: 1px solid var(--danger);
+      border-radius: 8px;
+      padding: 8px 12px;
+      display: none;
+    }
+  </style>
+
+  <!-- Import map: load three.js + cannon-es as ES modules from a CDN. -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://esm.sh/three@0.160.0",
+      "three/addons/": "https://esm.sh/three@0.160.0/examples/jsm/",
+      "cannon-es": "https://esm.sh/cannon-es@0.20.0"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="hud">
+    <h1><span class="shib">Shiba</span>Coin Block Visualizer</h1>
+    <div class="row"><span>Best height</span><b id="h-best" class="stat">–</b></div>
+    <div class="row"><span>Blocks on stage</span><b id="h-blocks" class="stat">0</b></div>
+    <div class="row"><span>Tx balls</span><b id="h-balls" class="stat">0</b></div>
+    <div class="row"><span>Mempool pending</span><b id="h-mempool" class="stat">0</b></div>
+    <div class="row"><span>Last update</span><b id="h-last">–</b></div>
+  </div>
+
+  <div id="controls">
+    <button class="btn" id="btn-pause">Pause</button>
+    <button class="btn" id="btn-reset">Reset scene</button>
+  </div>
+
+  <div id="legend">
+    <div class="row"><span class="swatch cube"></span><span>Orange cube = block (number printed on it)</span></div>
+    <div class="row"><span class="swatch ball"></span><span>Ball = transaction (bigger ball = bigger tx)</span></div>
+    <div class="row"><span class="swatch plane"></span><span>Blue plane = the ShibaCoin ledger (objects fall off the edge!)</span></div>
+    <div class="row" style="margin-top:6px;opacity:0.85;"><span>🖱</span><span>Click a cube to nudge it</span></div>
+  </div>
+
+  <div id="err"></div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import * as CANNON from 'cannon-es';
+
+    // -----------------------------------------------------------------
+    //   Color scheme — pulled from newsite.shibacoinshic.org (Tailwind)
+    // -----------------------------------------------------------------
+    const COLOR = {
+      primary:      0xf39c12,
+      primaryHover: 0xe67e22,
+      primaryLight: 0xf5b041,
+      bgBase:       0x0a1628,
+      bgCard:       0x0f2744,
+      bgCardHover:  0x153458,
+      bgDeeper:     0x071520,
+      textPrimary:  0xffffff,
+      textSecondary:0x7eb8da,
+      border:       0x1e4a6d,
+      success:      0x2ecc71,
+      warning:      0xf1c40f,
+      danger:       0xe74c3c,
+    };
+
+    const PLANE_HALF   = 22;          // plane spans -22..+22 on x and z
+    const PLANE_THICK  = 1;
+    const PLANE_Y      = 0;
+    const SPAWN_Y      = 35;
+    const DESPAWN_Y    = -45;
+    const MAX_OBJECTS  = 350;         // hard cap so we don't melt the GPU
+    const GRAVITY      = -22;         // m/s^2
+    const DEMO         = new URLSearchParams(location.search).get('demo') === '1';
+
+    // -----------------------------------------------------------------
+    //   THREE.js scene
+    // -----------------------------------------------------------------
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setClearColor(COLOR.bgDeeper, 1);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.Fog(COLOR.bgDeeper, 60, 140);
+
+    const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 400);
+    camera.position.set(28, 26, 38);
+    camera.lookAt(0, 4, 0);
+
+    // ----- Lighting -----
+    // Warm key light picks out the orange cubes; cool fill keeps the dark blues readable.
+    const key = new THREE.DirectionalLight(0xfff1d6, 1.4);
+    key.position.set(20, 40, 15);
+    key.castShadow = true;
+    key.shadow.mapSize.set(1024, 1024);
+    key.shadow.camera.left   = -35;
+    key.shadow.camera.right  =  35;
+    key.shadow.camera.top    =  35;
+    key.shadow.camera.bottom = -35;
+    key.shadow.camera.near   =  1;
+    key.shadow.camera.far    =  120;
+    key.shadow.bias = -0.0005;
+    scene.add(key);
+
+    const fill = new THREE.DirectionalLight(0x7eb8da, 0.45);
+    fill.position.set(-20, 18, -10);
+    scene.add(fill);
+
+    scene.add(new THREE.AmbientLight(0x223348, 0.55));
+
+    // Hemisphere for a gentle sky/ground tint.
+    scene.add(new THREE.HemisphereLight(0x1e4a6d, 0x0a1628, 0.35));
+
+    // -----------------------------------------------------------------
+    //   Physics world
+    // -----------------------------------------------------------------
+    const world = new CANNON.World({ gravity: new CANNON.Vec3(0, GRAVITY, 0) });
+    world.broadphase = new CANNON.SAPBroadphase(world);
+    world.allowSleep = true;
+    world.defaultContactMaterial.friction    = 0.35;
+    world.defaultContactMaterial.restitution = 0.42;
+
+    const matBlock = new CANNON.Material('block');
+    const matBall  = new CANNON.Material('ball');
+    const matPlane = new CANNON.Material('plane');
+    world.addContactMaterial(new CANNON.ContactMaterial(matBlock, matPlane, { friction: 0.5, restitution: 0.35 }));
+    world.addContactMaterial(new CANNON.ContactMaterial(matBall,  matPlane, { friction: 0.3, restitution: 0.55 }));
+    world.addContactMaterial(new CANNON.ContactMaterial(matBlock, matBlock, { friction: 0.4, restitution: 0.30 }));
+    world.addContactMaterial(new CANNON.ContactMaterial(matBall,  matBall,  { friction: 0.2, restitution: 0.55 }));
+    world.addContactMaterial(new CANNON.ContactMaterial(matBlock, matBall,  { friction: 0.3, restitution: 0.50 }));
+
+    // -----------------------------------------------------------------
+    //   The blue plane — "the ledger"
+    // -----------------------------------------------------------------
+    const planeGeo = new THREE.BoxGeometry(PLANE_HALF * 2, PLANE_THICK, PLANE_HALF * 2);
+    const planeMat = new THREE.MeshStandardMaterial({
+      color: COLOR.bgCard,
+      roughness: 0.85,
+      metalness: 0.15,
+    });
+    const planeMesh = new THREE.Mesh(planeGeo, planeMat);
+    planeMesh.position.y = PLANE_Y - PLANE_THICK / 2;
+    planeMesh.receiveShadow = true;
+    scene.add(planeMesh);
+
+    // Inlaid border on the plane edge, in the site's accent color.
+    const borderGeo = new THREE.EdgesGeometry(planeGeo);
+    const borderMat = new THREE.LineBasicMaterial({ color: COLOR.border, transparent: true, opacity: 0.7 });
+    const borderMesh = new THREE.LineSegments(borderGeo, borderMat);
+    borderMesh.position.copy(planeMesh.position);
+    scene.add(borderMesh);
+
+    // Subtle grid to give a sense of scale.
+    const grid = new THREE.GridHelper(PLANE_HALF * 2, 22, COLOR.border, COLOR.border);
+    grid.position.y = PLANE_Y + 0.001;
+    grid.material.transparent = true;
+    grid.material.opacity = 0.35;
+    scene.add(grid);
+
+    // Static plane body
+    const planeBody = new CANNON.Body({
+      mass: 0,
+      shape: new CANNON.Box(new CANNON.Vec3(PLANE_HALF, PLANE_THICK / 2, PLANE_HALF)),
+      material: matPlane,
+    });
+    planeBody.position.set(0, PLANE_Y - PLANE_THICK / 2, 0);
+    world.addBody(planeBody);
+
+    // -----------------------------------------------------------------
+    //   Object pool: keep a max number of live (mesh, body) pairs
+    // -----------------------------------------------------------------
+    /** @type {Array<{mesh: THREE.Object3D, body: CANNON.Body, kind: 'block'|'ball'}>} */
+    const objects = [];
+
+    function totalCount() { return objects.length; }
+    function countByKind(k) { let n = 0; for (const o of objects) if (o.kind === k) n++; return n; }
+
+    function pruneOldest() {
+      // Remove the oldest non-block (balls) first, then blocks.
+      const balls = objects.filter(o => o.kind === 'ball');
+      const blocks = objects.filter(o => o.kind === 'block');
+      if (balls.length)   removeObject(balls[0]);
+      else if (blocks.length) removeObject(blocks[0]);
+    }
+
+    function removeObject(o) {
+      scene.remove(o.mesh);
+      world.removeBody(o.body);
+      if (o.mesh.geometry) o.mesh.geometry.dispose();
+      if (o.mesh.material) {
+        // Material.dispose() does NOT free the material's textures. Every
+        // block owns a 384x384 CanvasTexture (map and emissiveMap point at
+        // the same one), so dispose those explicitly or they leak GPU memory
+        // for as long as the page stays open. A block's six faces share one
+        // material, hence the Sets.
+        const mats = new Set(Array.isArray(o.mesh.material) ? o.mesh.material : [o.mesh.material]);
+        for (const m of mats) {
+          for (const t of new Set([m.map, m.emissiveMap].filter(Boolean))) t.dispose();
+          m.dispose();
+        }
+      }
+      const idx = objects.indexOf(o);
+      if (idx >= 0) objects.splice(idx, 1);
+    }
+
+    function pruneFallen() {
+      for (let i = objects.length - 1; i >= 0; i--) {
+        if (objects[i].body.position.y < DESPAWN_Y) removeObject(objects[i]);
+      }
+    }
+
+    // -----------------------------------------------------------------
+    //   Cube text texture: bake the orange body + dark blue number into
+    //   one opaque canvas. Using transparency + alphaTest on the
+    //   material makes the whole face see-through — the cube ends up
+    //   looking like floating orange/dark-blue letters instead of a
+    //   solid orange block. Paint the body into the texture instead.
+    // -----------------------------------------------------------------
+    function makeNumberTexture(label) {
+      // Higher canvas resolution keeps digits sharp now that the face is bigger.
+      const size = 384;
+      const canvas = document.createElement('canvas');
+      canvas.width = size; canvas.height = size;
+      const ctx = canvas.getContext('2d');
+
+      // Solid orange body, matches the site's primary color.
+      ctx.fillStyle = '#f39c12';
+      ctx.fillRect(0, 0, size, size);
+
+      // Slight inner border to give the face a subtle framed look.
+      ctx.strokeStyle = '#e67e22';
+      ctx.lineWidth = 8;
+      ctx.strokeRect(4, 4, size - 8, size - 8);
+
+      // Pick a font size that just fits the number of digits, with a small
+      // margin on each side. Sans-serif digits are ~0.55em wide on average.
+      // Aim for the text to fill ~92% of the face width.
+      const digitCount    = String(label).length;
+      const maxWidthFrac  = 0.92;
+      const digitWidthEm  = 0.55;
+      const idealFontSize = Math.floor(size * maxWidthFrac / (digitCount * digitWidthEm));
+      const fontSize      = Math.max(56, Math.min(220, idealFontSize));
+
+      // Block number in dark blue (site's --bg-base).
+      ctx.fillStyle = '#0a1628';
+      ctx.font = `bold ${fontSize}px "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(label), size / 2, size / 2 + fontSize * 0.06);
+
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.anisotropy = 8;
+      tex.needsUpdate = true;
+      return tex;
+    }
+
+    // -----------------------------------------------------------------
+    //   Block = orange cube with number texture
+    // -----------------------------------------------------------------
+    function spawnBlock({ height, hash, size }) {
+      if (totalCount() >= MAX_OBJECTS) pruneOldest();
+
+      // Bigger cube so 6-digit block numbers have room to breathe.
+      // log10 term still gives a small size-based variation between
+      // small and large blocks, capped so we don't dwarf the plane.
+      const s = 4.2 + Math.min(2.4, Math.log10(Math.max(1, Number(size) || 1)) * 0.7);
+      const geo = new THREE.BoxGeometry(s, s, s);
+      const numTex = makeNumberTexture(height);
+
+      // Single solid material: the texture already bakes the orange body
+      // + dark blue number, so no transparency / alphaTest is needed.
+      // (three.js BoxGeometry face order: +x, -x, +y, -y, +z, -z.)
+      const face = new THREE.MeshStandardMaterial({
+        map: numTex,
+        roughness: 0.45,
+        metalness: 0.25,
+        emissive: COLOR.primaryHover,
+        emissiveIntensity: 0.06,
+        emissiveMap: numTex,
+      });
+      const mats = [face, face, face, face, face, face];
+      const mesh = new THREE.Mesh(geo, mats);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+
+      // Spawn above the plane at a random x/z within the plane footprint (with a margin).
+      const margin = 4;
+      const x = (Math.random() * 2 - 1) * (PLANE_HALF - margin);
+      const z = (Math.random() * 2 - 1) * (PLANE_HALF - margin);
+      mesh.position.set(x, SPAWN_Y + Math.random() * 6, z);
+
+      const body = new CANNON.Body({
+        mass: 8,
+        shape: new CANNON.Box(new CANNON.Vec3(s / 2, s / 2, s / 2)),
+        material: matBlock,
+        linearDamping: 0.04,
+        angularDamping: 0.06,
+      });
+      body.position.set(mesh.position.x, mesh.position.y, mesh.position.z);
+      body.quaternion.setFromEuler(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+      body.allowSleep = true;
+      body.sleepSpeedLimit = 0.15;
+      body.sleepTimeLimit  = 1.2;
+
+      scene.add(mesh);
+      world.addBody(body);
+      objects.push({ mesh, body, kind: 'block' });
+    }
+
+    // -----------------------------------------------------------------
+    //   Ball = colored sphere sized by tx size
+    // -----------------------------------------------------------------
+    // Tx size -> 0..1 on a log scale: 150 B (a minimal 1-in/1-out payment)
+    // maps to 0, 20 kB (a big consolidation / multisig) maps to 1, anything
+    // outside that range is clamped. Radius and colour both derive from
+    // this one value so they stay in step.
+    const TX_LOG_MIN = Math.log10(150);
+    const TX_LOG_MAX = Math.log10(20000);
+    const BALL_R_MIN = 0.35;
+    const BALL_R_MAX = 2.4;
+    function txSizeToT(bytes) {
+      const l = Math.log10(Math.max(1, Number(bytes) || 1));
+      return Math.max(0, Math.min(1, (l - TX_LOG_MIN) / (TX_LOG_MAX - TX_LOG_MIN)));
+    }
+    function txSizeToRadius(bytes) {
+      // 250 B ~ 0.56 (marble), 1 kB ~ 1.15, 5 kB ~ 1.82, 20 kB+ = 2.4 (grapefruit).
+      return BALL_R_MIN + txSizeToT(bytes) * (BALL_R_MAX - BALL_R_MIN);
+    }
+    function txSizeToColor(bytes) {
+      // Light blue (small) -> orange (~1.7 kB) -> red (20 kB+).
+      const t = txSizeToT(bytes);
+      const c = new THREE.Color();
+      // gradient: 0x7eb8da (text-secondary blue) -> 0xf39c12 (primary) -> 0xe74c3c (danger)
+      if (t < 0.5) c.lerpColors(new THREE.Color(0x7eb8da), new THREE.Color(0xf39c12), t / 0.5);
+      else         c.lerpColors(new THREE.Color(0xf39c12), new THREE.Color(0xe74c3c), (t - 0.5) / 0.5);
+      return c;
+    }
+
+    function spawnBall({ txid, size, vsize }) {
+      if (totalCount() >= MAX_OBJECTS) pruneOldest();
+
+      const r  = txSizeToRadius(size);
+      const geo = new THREE.SphereGeometry(r, 20, 16);
+      const mat = new THREE.MeshStandardMaterial({
+        color: txSizeToColor(size),
+        roughness: 0.3,
+        metalness: 0.35,
+        emissive: txSizeToColor(size),
+        emissiveIntensity: 0.12,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+
+      const margin = 4;
+      const x = (Math.random() * 2 - 1) * (PLANE_HALF - margin);
+      const z = (Math.random() * 2 - 1) * (PLANE_HALF - margin);
+      mesh.position.set(x, SPAWN_Y + Math.random() * 4, z);
+
+      const body = new CANNON.Body({
+        mass: 0.6 + r * 0.8,
+        shape: new CANNON.Sphere(r),
+        material: matBall,
+        linearDamping: 0.02,
+        angularDamping: 0.04,
+      });
+      body.position.set(mesh.position.x, mesh.position.y, mesh.position.z);
+      body.allowSleep = true;
+      body.sleepSpeedLimit = 0.2;
+      body.sleepTimeLimit  = 1.0;
+
+      scene.add(mesh);
+      world.addBody(body);
+      objects.push({ mesh, body, kind: 'ball' });
+    }
+
+    // -----------------------------------------------------------------
+    //   Server sync
+    // -----------------------------------------------------------------
+    const spawnedHeights = new Set();
+    const spawnedTxids   = new Set();
+    let lastState = null;
+
+    function showError(msg) {
+      const e = document.getElementById('err');
+      e.textContent = msg;
+      e.style.display = 'block';
+      clearTimeout(showError._t);
+      showError._t = setTimeout(() => { e.style.display = 'none'; }, 6000);
+    }
+
+    async function refreshState() {
+      try {
+        // Use a relative path so the fetch goes through whatever nginx
+        // prefix we're mounted under (e.g. /blocks/api/state) instead of
+        // the origin root, which would be caught by Next.js.
+        const resp = await fetch('api/state', { cache: 'no-store' });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        lastState = data;
+        if (DEMO) return;   // demo runs on synthetic data only; live state is just the height baseline
+        applyState(data);
+        document.getElementById('h-best').textContent = data.bestHeight.toLocaleString();
+        document.getElementById('h-mempool').textContent = (data.mempoolCount || 0).toLocaleString();
+        document.getElementById('h-last').textContent = new Date().toLocaleTimeString();
+      } catch (e) {
+        showError('Lost connection to visualizer server: ' + e.message);
+      }
+    }
+
+    function applyState(data) {
+      // 1. New blocks → drop a cube, and spawn balls for any block txs
+      //    we haven't already spawned (mempool may have shown them first).
+      for (const blk of data.recentBlocks) {
+        if (spawnedHeights.has(blk.height)) continue;
+        spawnedHeights.add(blk.height);
+        spawnBlock({ height: blk.height, hash: blk.hash, size: blk.size });
+        for (const tx of blk.txs) {
+          if (spawnedTxids.has(tx.txid)) continue;
+          spawnedTxids.add(tx.txid);
+          spawnBall(tx);
+        }
+      }
+      // 2. New mempool entries → spawn a ball for each one we haven't seen.
+      //    When the same txid later appears in a block, we keep the ball
+      //    (it represents the tx itself), and the server drops it from
+      //    its mempool map so it stops being reported as pending.
+      if (Array.isArray(data.mempool)) {
+        for (const tx of data.mempool) {
+          if (spawnedTxids.has(tx.txid)) continue;
+          spawnedTxids.add(tx.txid);
+          spawnBall(tx);
+        }
+        // Mempool tx that disappeared without being mined (RBF, expiry, etc.)
+        // — we don't remove the ball, it'll fall off the plane on its own.
+      }
+      // Keep the sets from growing forever.
+      if (spawnedHeights.size > 200) {
+        const arr = Array.from(spawnedHeights).sort((a, b) => a - b);
+        for (let i = 0; i < arr.length - 100; i++) spawnedHeights.delete(arr[i]);
+      }
+      if (spawnedTxids.size > 5000) {
+        const arr = Array.from(spawnedTxids);
+        for (let i = 0; i < arr.length - 3000; i++) spawnedTxids.delete(arr[i]);
+      }
+    }
+
+    // -----------------------------------------------------------------
+    //   Main loop
+    // -----------------------------------------------------------------
+    let paused = false;
+    const clock = new THREE.Clock();
+    let acc = 0;
+    const FIXED = 1 / 60;
+
+    function tick() {
+      requestAnimationFrame(tick);
+      const dt = Math.min(0.05, clock.getDelta());
+      if (!paused) {
+        acc += dt;
+        while (acc >= FIXED) {
+          world.step(FIXED);
+          acc -= FIXED;
+        }
+        // Sync meshes to bodies
+        for (const o of objects) {
+          o.mesh.position.copy(o.body.position);
+          o.mesh.quaternion.copy(o.body.quaternion);
+        }
+        pruneFallen();
+      }
+      // Slow auto-orbit so the scene is alive even when idle.
+      const t = clock.elapsedTime * 0.05;
+      camera.position.x = Math.cos(t) * 42;
+      camera.position.z = Math.sin(t) * 42;
+      camera.lookAt(0, 4, 0);
+
+      document.getElementById('h-blocks').textContent = countByKind('block');
+      document.getElementById('h-balls').textContent  = countByKind('ball');
+
+      renderer.render(scene, camera);
+    }
+
+    // -----------------------------------------------------------------
+    //   UI hooks
+    // -----------------------------------------------------------------
+    document.getElementById('btn-pause').addEventListener('click', (e) => {
+      paused = !paused;
+      e.currentTarget.textContent = paused ? 'Resume' : 'Pause';
+    });
+
+    document.getElementById('btn-reset').addEventListener('click', () => {
+      // Clear the stage only. spawnedHeights / spawnedTxids are kept on
+      // purpose: clearing them made the server's cached recent blocks and
+      // mempool rain down again on the next poll. After a reset, only blocks
+      // and txs that arrive from now on are dropped.
+      while (objects.length) removeObject(objects[0]);
+    });
+
+    // -----------------------------------------------------------------
+    //   Click-to-nudge: pointerdown on a block applies a one-shot
+    //   impulse in the camera-forward direction at the hit point, so
+    //   the block tips/tumbles away from the camera and bounces off
+    //   whatever it lands on. Adds a brief emissive flash for feedback.
+    // -----------------------------------------------------------------
+    const raycaster   = new THREE.Raycaster();
+    const ndc         = new THREE.Vector2();
+    const camForward  = new THREE.Vector3();
+    const NUDGE_STRENGTH = 38;    // impulse magnitude (kg·m/s); tuned to a mass-8 block
+    const NUDGE_UP_BIAS  = 0.18;  // small lift so the block pops up, not just slides
+    const FLASH_MS       = 260;
+
+    function pickBlock(event) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      ndc.x =  ((event.clientX - rect.left) / rect.width)  * 2 - 1;
+      ndc.y = -((event.clientY - rect.top)  / rect.height) * 2 + 1;
+      raycaster.setFromCamera(ndc, camera);
+      const blocks = objects.filter(o => o.kind === 'block');
+      if (!blocks.length) return null;
+      const hits = raycaster.intersectObjects(blocks.map(o => o.mesh), false);
+      if (!hits.length) return null;
+      const mesh = hits[0].object;
+      const entry = blocks.find(o => o.mesh === mesh);
+      return entry ? { entry, point: hits[0].point } : null;
+    }
+
+    function flashBlock(entry) {
+      // Each face shares one material instance per block; bump its
+      // emissive intensity briefly, then ease back to the resting 0.06.
+      const mat = Array.isArray(entry.mesh.material) ? entry.mesh.material[0] : entry.mesh.material;
+      const rest = 0.06;
+      const peak = 0.55;
+      const start = performance.now();
+      function step() {
+        const t = (performance.now() - start) / FLASH_MS;
+        if (t >= 1) { mat.emissiveIntensity = rest; return; }
+        // 1 → 0 over the duration, ease-out cubic
+        const k = 1 - t;
+        const eased = k * k * k;
+        mat.emissiveIntensity = rest + (peak - rest) * eased;
+        requestAnimationFrame(step);
+      }
+      step();
+    }
+
+    function nudgeBlock(entry, point) {
+      // Direction the camera is looking, with a small upward bias so the
+      // block pops instead of just sliding along the plane.
+      camera.getWorldDirection(camForward);
+      const dir = new CANNON.Vec3(camForward.x, camForward.y + NUDGE_UP_BIAS, camForward.z);
+      const len = Math.hypot(dir.x, dir.y, dir.z) || 1;
+      dir.scale(NUDGE_STRENGTH / len, dir);
+
+      // Apply at the hit point (in body-local space) so the block tips
+      // around the contact rather than translating uniformly.
+      const local = new CANNON.Vec3(
+        point.x - entry.body.position.x,
+        point.y - entry.body.position.y,
+        point.z - entry.body.position.z,
+      );
+
+      entry.body.wakeUp();
+      entry.body.applyImpulse(dir, local);
+      flashBlock(entry);
+    }
+
+    // pointerdown covers both mouse clicks and touch taps.
+    renderer.domElement.addEventListener('pointerdown', (event) => {
+      if (event.button !== undefined && event.button !== 0) return; // left-click / primary touch only
+      const hit = pickBlock(event);
+      if (hit) {
+        nudgeBlock(hit.entry, hit.point);
+        event.preventDefault();
+      }
+    });
+
+    // Hover cursor: hint that blocks are interactive.
+    renderer.domElement.addEventListener('pointermove', (event) => {
+      const hit = pickBlock(event);
+      renderer.domElement.style.cursor = hit ? 'pointer' : 'default';
+    });
+
+    // Resize
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // -----------------------------------------------------------------
+    //   Demo mode — ShibaCoin's recent blocks happen to be all empty
+    //   miner blocks (single coinbase tx). Pass ?demo=1 in the URL to
+    //   skip the live data and spawn synthetic blocks + sized txs so
+    //   you can see what the full visual looks like.
+    // -----------------------------------------------------------------
+    const DEMO_TXS = [
+      { size: 220,   vsize: 220 },     // small payment
+      { size: 280,   vsize: 250 },
+      { size: 420,   vsize: 380 },
+      { size: 850,   vsize: 720 },
+      { size: 1500,  vsize: 1100 },
+      { size: 3200,  vsize: 2100 },
+      { size: 7800,  vsize: 4500 },
+      { size: 22000, vsize: 12000 },   // big multisig-ish
+    ];
+    const DEMO_BLOCK_MS = 10000;       // a new synthetic block every 10 s
+    let demoHeight = 0;
+
+    function spawnDemoBlock() {
+      const h = demoHeight++;
+      spawnBlock({ height: h, hash: 'demo', size: 800 + Math.floor(Math.random() * 1800) });
+      // 4-8 balls per block
+      const n = 4 + Math.floor(Math.random() * 5);
+      for (let j = 0; j < n; j++) {
+        const tx = DEMO_TXS[Math.floor(Math.random() * DEMO_TXS.length)];
+        spawnBall({ txid: 'demo-' + h + '-' + j, size: tx.size, vsize: tx.vsize });
+      }
+      document.getElementById('h-best').textContent = h.toLocaleString();
+      document.getElementById('h-last').textContent = new Date().toLocaleTimeString() + ' (demo)';
+    }
+
+    function runDemo() {
+      // Start just below the real best height (if the server answered) so the
+      // numbers look plausible, then keep the stage alive with new blocks.
+      demoHeight = (lastState?.bestHeight || 731750) - 5;
+      for (let i = 0; i < 6; i++) spawnDemoBlock();
+      setInterval(() => { if (!paused) spawnDemoBlock(); }, DEMO_BLOCK_MS);
+    }
+
+    // Kick everything off
+    if (DEMO) {
+      // One fetch for the height baseline (runDemo still works if it fails),
+      // then synthetic data only — live blocks and mempool are not applied.
+      refreshState().then(runDemo);
+    } else {
+      refreshState();
+      setInterval(refreshState, 6000);
+    }
+    tick();
+  </script>
+</body>
+</html>

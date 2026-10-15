@@ -1,0 +1,41 @@
+# systemd unit for the ShibaCoin Block Visualizer (alternative to PM2).
+#
+# Install:
+#   sudo cp examples/shibacoin-blockvisualizer.service /etc/systemd/system/
+#   sudo nano /etc/systemd/system/shibacoin-blockvisualizer.service   # adjust User, paths, env
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now shibacoin-blockvisualizer
+#   journalctl -u shibacoin-blockvisualizer -f                        # logs
+
+[Unit]
+Description=ShibaCoin Block Visualizer
+After=network.target
+# If shibacoind is also a systemd service, start after it:
+# After=network.target shibacoind.service
+# Wants=shibacoind.service
+
+[Service]
+Type=simple
+# Simplest: the same user that runs shibacoind, so shibacoin-cli finds its
+# RPC credentials automatically. Otherwise see SHIBACOIN_CLI_ARGS below.
+User=shibacoin
+Group=shibacoin
+WorkingDirectory=/usr/src/blockvisualizer
+# `which node` tells you the right path (e.g. /usr/local/bin/node with NodeSource or nvm).
+ExecStart=/usr/bin/node server.js
+Environment=PORT=3002
+Environment=HOST=127.0.0.1
+Environment=SHIBACOIN_CLI=/usr/local/bin/shibacoin-cli
+# Environment="SHIBACOIN_CLI_ARGS=-conf=/home/shibacoin/.shibacoin/shibacoin.conf"
+Environment=POLL_MS=6000
+Restart=on-failure
+RestartSec=5
+
+# Hardening: the visualizer only reads; it never writes to disk.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
